@@ -64,7 +64,7 @@ dns:
   nameserver:
     - https://8.8.8.8/dns-query#RULES&ecs=223.5.5.0/24
   fake-ip-filter:
-    - "rule-set:fakeipfilter_domain"
+    - "rule-set:fakeipfilter"
 
 # 代理组（精简为3个）
 proxy-groups:
@@ -85,32 +85,173 @@ proxy-groups:
     type: select
     proxies: [🚀 代理, DIRECT]
 
-# 规则（精简：国内直连，其余走代理）
 rules:
+  # ============================================
+  # 第一层：特殊处理（REJECT / 关键基础设施）
+  # ============================================
+  # 【云元数据服务】WSL2/本地环境不可达，直接拒绝避免无意义的连接尝试
+  - IP-CIDR,169.254.169.254/32,REJECT,no-resolve
+  # windows 的天气等小组件使用的 cdn, 同样因为无法连接导致日志刷屏, 故禁用
+  - DOMAIN,t-ring-fdv2.msedge.net,REJECT,no-resolve
+
+  # 【DNS 服务器】确保 DNS 请求正确路由
+  - IP-CIDR,223.5.5.5/32,DIRECT,no-resolve       # 阿里 DNS
+  - IP-CIDR,223.6.6.6/32,DIRECT,no-resolve       # 阿里 DNS 备用
+
+  # ============================================
+  # 第二层：自定义规则（优先级最高）
+  # ============================================
+  - RULE-SET,custom_proxy,🚀 代理
+  - RULE-SET,custom_direct,DIRECT
+
+  # ============================================
+  # 第三层：局域网与私有地址（防止回环和内网泄露）
+  # ============================================
   - RULE-SET,private_ip,DIRECT,no-resolve
   - RULE-SET,private_domain,DIRECT
+
+  # ============================================
+  # 第四层：高频DIRECT服务（减轻规则匹配负担）
+  # ============================================
+  - RULE-SET,speedtest_domain,DIRECT
+  - RULE-SET,apple_domain,DIRECT
+  - RULE-SET,apple_ip,DIRECT,no-resolve
+
+  # ============================================
+  # 第五层：特定应用代理（按使用频率从高到低排序）
+  # ============================================
+  - RULE-SET,ai_domain,🚀 代理
+  - RULE-SET,onedrive_domain,🚀 代理
+  - RULE-SET,steam_domain,🚀 代理
+  - RULE-SET,github_domain,🚀 代理
+  - RULE-SET,x_domain,🚀 代理
+  - RULE-SET,telegram_ip,🚀 代理
+  - RULE-SET,telegram_domain,🚀 代理
+  - RULE-SET,sony_domain,🚀 代理
+  - RULE-SET,microsoft_domain,🚀 代理
+
+  # ============================================
+  # 第六层：通用大厂代理（Google 系）
+  # ============================================
+  - RULE-SET,youtube_domain,🚀 代理
+  - RULE-SET,google_domain,🚀 代理
+  - RULE-SET,google_ip,🚀 代理,no-resolve
+
+  # ============================================
+  # 第七层：国内规则（大量DIRECT匹配）
+  # ============================================
   - RULE-SET,cn_domain,DIRECT
   - RULE-SET,cn_ip,DIRECT,no-resolve
+
+  # ============================================
+  # 第八层：兜底规则
+  # ============================================
+  # 非中国域名 - 走默认代理
+  - RULE-SET,geolocation-!cn_domain,🚀 代理
+  # 最终漏网之鱼 - 白名单模式，未知流量走代理（防墙）
   - MATCH,🐟 漏网之鱼
 
-# 规则集
-rule-anchor:
-  ip: &ip {type: http, interval: 86400, behavior: ipcidr, format: mrs}
-  domain: &domain {type: http, interval: 86400, behavior: domain, format: mrs}
+### 规则配置
+RuleSet_classical_text: &RuleSet_classical_text {type: http, behavior: classical, interval: 43200, format: text}
+RuleSet_domain_mrs: &RuleSet_domain_mrs {type: http, behavior: domain, interval: 43200, format: mrs}
+RuleSet_domain_text: &RuleSet_domain_text {type: http, behavior: domain, interval: 43200, format: text}
+RuleSet_ipcidr_mrs: &RuleSet_ipcidr_mrs {type: http, behavior: ipcidr, interval: 43200, format: mrs}
 
+# 规则集
 rule-providers:
-  fakeipfilter_domain:
-    <<: *domain
-    url: "https://raw.githubusercontent.com/wwqgtxx/clash-rules/release/fakeip-filter.mrs"
+  # 域名规则
+  # 自定义规则
+  custom_proxy:
+    <<: *RuleSet_classical_text
+    url: "https://raw.githubusercontent.com/lvbibir/clash/refs/heads/master/Ruleset/Proxy.list"
+    path: ./rule-providers/custom_proxy.list
+  custom_direct:
+    <<: *RuleSet_classical_text
+    url: "https://raw.githubusercontent.com/lvbibir/clash/refs/heads/master/Ruleset/Direct.list"
+    path: ./rule-providers/custom_direct.list
+  fakeipfilter:
+    <<: *RuleSet_domain_text
+    url: "https://raw.githubusercontent.com/juewuy/ShellCrash/refs/heads/dev/public/fake_ip_filter.list"
+    path: ./rule-providers/fakeipfilter.list
+  # 通用域名规则
   private_domain:
-    <<: *domain
+    <<: *RuleSet_domain_mrs
     url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/private.mrs"
-  private_ip:
-    <<: *ip
-    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/private.mrs"
+    path: ./rule-providers/private_domain.mrs
+  ai_domain:
+    <<: *RuleSet_domain_mrs
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-ai-!cn.mrs"
+    path: ./rule-providers/ai_domain.mrs
+  x_domain:
+    <<: *RuleSet_domain_mrs
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/x.mrs"
+    path: ./rule-providers/x_domain.mrs
+  youtube_domain:
+    <<: *RuleSet_domain_mrs
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/youtube.mrs"
+    path: ./rule-providers/youtube_domain.mrs
+  google_domain:
+    <<: *RuleSet_domain_mrs
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/google.mrs"
+    path: ./rule-providers/google_domain.mrs
+  github_domain:
+    <<: *RuleSet_domain_mrs
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/github.mrs"
+    path: ./rule-providers/github_domain.mrs 
+  steam_domain:
+    <<: *RuleSet_domain_mrs
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/steam.mrs"
+    path: ./rule-providers/steam_domain.mrs
+  sony_domain:
+    <<: *RuleSet_domain_mrs
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/sony.mrs"
+    path: ./rule-providers/sony_domain.mrs
+  telegram_domain:
+    <<: *RuleSet_domain_mrs
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/telegram.mrs"
+    path: ./rule-providers/telegram_domain.mrs
+  onedrive_domain:
+    <<: *RuleSet_domain_mrs
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/onedrive.mrs"
+    path: ./rule-providers/onedrive_domain.mrs
+  microsoft_domain:
+    <<: *RuleSet_domain_mrs
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/microsoft.mrs"
+    path: ./rule-providers/microsoft_domain.mrs
+  apple_domain:
+    <<: *RuleSet_domain_mrs
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/apple.mrs"
+    path: ./rule-providers/apple_domain.mrs
+  speedtest_domain:
+    <<: *RuleSet_domain_mrs
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/ookla-speedtest.mrs"
+    path: ./rule-providers/speedtest_domain.mrs
+  geolocation-!cn_domain:
+    <<: *RuleSet_domain_mrs
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/geolocation-!cn.mrs"
+    path: ./rule-providers/geolocation-!cn_domain.mrs
   cn_domain:
-    <<: *domain
+    <<: *RuleSet_domain_mrs
     url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/cn.mrs"
+    path: ./rule-providers/cn_domain.mrs
+  # 通用IP 规则
+  private_ip:
+    <<: *RuleSet_ipcidr_mrs
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/private.mrs"
+    path: ./rule-providers/private_ip.mrs
   cn_ip:
-    <<: *ip
+    <<: *RuleSet_ipcidr_mrs
     url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/cn.mrs"
+    path: ./rule-providers/cn_ip.mrs
+  google_ip:
+    <<: *RuleSet_ipcidr_mrs
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/google.mrs"
+    path: ./rule-providers/google_ip.mrs
+  apple_ip:
+    <<: *RuleSet_ipcidr_mrs
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo-lite/geoip/apple.mrs"
+    path: ./rule-providers/apple_ip.mrs
+  telegram_ip:
+    <<: *RuleSet_ipcidr_mrs
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo-lite/geoip/telegram.mrs"
+    path: ./rule-providers/telegram_ip.mrs
